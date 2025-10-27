@@ -1,7 +1,11 @@
 ﻿using System;
 using System.Configuration;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Text;
+using System.Security.Principal;
+using System.Runtime.InteropServices;
 
 namespace WindowsServiceManagement
 {
@@ -24,7 +28,7 @@ namespace WindowsServiceManagement
             while (true)
             {
                 Console.WriteLine("[1] 登録(create)  [2] 起動(start)  [3] 停止(stop)  [4] 削除(delete)");
-                Console.WriteLine("[5] 状態(query)   [6] 説明設定(description)  [7] 自動/手動 切替");
+                Console.WriteLine("[5] 状態(query)   [6] 説明設定(description)  [7] 自動/手動 切替  [8] SeServiceLogon 付与");
                 Console.WriteLine("[0] 終了");
                 Console.Write("選択: ");
                 var key = Console.ReadLine()?.Trim();
@@ -40,6 +44,7 @@ namespace WindowsServiceManagement
                         case "5": QueryService(cfg); break;
                         case "6": SetDescription(cfg); break;
                         case "7": SetStartupType(cfg); break;
+                        case "8": GrantLogonAsService(cfg); break;
                         case "0":
                             Console.WriteLine("終了します。何かキーで閉じます…");
                             Console.ReadKey(true);
@@ -143,6 +148,39 @@ namespace WindowsServiceManagement
             RunCmd(args);
         }
 
+        static void GrantLogonAsService(ServiceConfig cfg)
+        {
+            var acct = cfg.ServiceUser;
+            if (string.IsNullOrWhiteSpace(acct))
+            {
+                Console.Write("付与するアカウント（例 .\\svcUser / DOMAIN\\user）：");
+                acct = Console.ReadLine()?.Trim();
+                if (string.IsNullOrWhiteSpace(acct))
+                {
+                    Console.WriteLine("アカウントが未指定です。");
+                    return;
+                }
+            }
+
+            if (!Confirm($"アカウント {acct} に『サービスとしてログオン』権限を付与しますか？"))
+                return;
+
+            try
+            {
+                UserRightsUtil.AddLogonAsService(acct);
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"OK: {acct} に SeServiceLogonRight を付与しました。");
+                Console.ResetColor();
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("付与に失敗: " + ex.Message);
+                Console.ResetColor();
+                Console.WriteLine("※ 管理者権限で実行しているか、ドメイングループポリシーで禁止されていないか確認してください。");
+            }
+        }
+
         // ====== 共通 ======
         static (int code, string stdout, string stderr) RunCmd(string rawArgs)
         {
@@ -225,4 +263,91 @@ namespace WindowsServiceManagement
             };
         }
     }
+
+
+
+    static class UserRightsUtil
+    {
+        public static void AddLogonAsService(string accountName)
+        {
+            // 1) アカウント名 → SID
+            var nt = new NTAccount(accountName);
+            var sid = (SecurityIdentifier)nt.Translate(typeof(SecurityIdentifier));
+            byte[] sidBytes = new byte[sid.BinaryLength];
+            sid.GetBinaryForm(sidBytes, 0);
+
+            // 2) LSA ポリシーを開く
+            LSA_OBJECT_ATTRIBUTES loa = default;
+            IntPtr policy;
+            uint access = POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT;
+            var status = LsaOpenPolicy(IntPtr.Zero, ref loa, access, out policy);
+            ThrowOnLsaError(status, "LsaOpenPolicy");
+
+            try
+            {
+                // 3) 権限名（Unicode）
+                var right = new LSA_UNICODE_STRING("SeServiceLogonRight");
+
+                // 4) 付与
+                status = LsaAddAccountRights(policy, sidBytes, new[] { right }, 1);
+                ThrowOnLsaError(status, "LsaAddAccountRights");
+            }
+            finally
+            {
+                if (policy != IntPtr.Zero) LsaClose(policy);
+            }
+        }
+
+        // ==== P/Invoke ====
+        const uint POLICY_CREATE_ACCOUNT = 0x00000010;
+        const uint POLICY_LOOKUP_NAMES = 0x00000800;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct LSA_OBJECT_ATTRIBUTES
+        {
+            public int Length;
+            public IntPtr RootDirectory;
+            public IntPtr ObjectName; // PLSA_UNICODE_STRING
+            public uint Attributes;
+            public IntPtr SecurityDescriptor;
+            public IntPtr SecurityQualityOfService;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct LSA_UNICODE_STRING
+        {
+            public ushort Length;
+            public ushort MaximumLength;
+            public IntPtr Buffer;
+
+            public LSA_UNICODE_STRING(string s)
+            {
+                if (s == null) s = string.Empty;
+                var bytes = System.Text.Encoding.Unicode.GetBytes(s);
+                Length = (ushort)bytes.Length;
+                MaximumLength = (ushort)(Length + 2);
+                Buffer = Marshal.StringToHGlobalUni(s);
+            }
+        }
+
+        [DllImport("advapi32.dll")]
+        static extern uint LsaOpenPolicy(IntPtr SystemName, ref LSA_OBJECT_ATTRIBUTES ObjectAttributes, uint DesiredAccess, out IntPtr PolicyHandle);
+
+        [DllImport("advapi32.dll")]
+        static extern uint LsaAddAccountRights(IntPtr PolicyHandle, byte[] AccountSid, LSA_UNICODE_STRING[] UserRights, int CountOfRights);
+
+        [DllImport("advapi32.dll")]
+        static extern uint LsaClose(IntPtr ObjectHandle);
+
+        [DllImport("advapi32.dll")]
+        static extern uint LsaNtStatusToWinError(uint Status);
+
+        static void ThrowOnLsaError(uint ntStatus, string api)
+        {
+            if (ntStatus == 0) return;
+            uint winErr = LsaNtStatusToWinError(ntStatus);
+            throw new System.ComponentModel.Win32Exception((int)winErr, $"{api} 失敗 (0x{ntStatus:X8}, Win32={winErr})");
+        }
+    }
+
 }

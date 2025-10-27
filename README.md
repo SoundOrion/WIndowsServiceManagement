@@ -154,6 +154,93 @@ whoami /priv | find "SeServiceLogonRight"
 
 ---
 
+## 👤 実行アカウントの指定と権限
+
+Windows サービスは、実行アカウントを指定することで
+**権限・ネットワークアクセス・UI制約**などの性質が変わります。
+`App.config` の設定値（または登録時の `obj=` パラメータ）で指定します。
+
+---
+
+### 🔧 主なアカウント種別
+
+| 指定例                           | 実行ユーザー             | 登録可否       | 特徴・用途                                                                           |
+| ----------------------------- | ------------------ | ---------- | ------------------------------------------------------------------------------- |
+| *(指定なし)*                      | **LocalSystem**    | ✅          | 既定。最高権限（SYSTEM）で動作。すべてのローカルリソースにアクセス可能。<br>⚠️ UI表示不可（セッション0）。ネットワークはマシン資格情報で接続。 |
+| `.\User`                      | **ローカルユーザー**       | ✅（パスワード必須） | そのPC限定のユーザー。GUIアプリの動作権限に近い。<br>🔸 「サービスとしてログオン」権限の付与が必要。                        |
+| `DOMAIN\User`                 | **ドメインユーザー**       | ✅          | Active Directory 環境で使用。共有リソースやSQLサーバーなどにアクセス可能。<br>⚠️ GPO制御により権限が上書きされる場合あり。    |
+| `NT AUTHORITY\LocalService`   | **LocalService**   | ✅          | 組み込みの最小権限アカウント。ローカル操作のみ。<br>ネットワークアクセス不可。                                       |
+| `NT AUTHORITY\NetworkService` | **NetworkService** | ✅          | 組み込みの軽権限アカウント。<br>マシン資格情報でネットワークアクセスが可能（Webサービスなどに便利）。                          |
+
+---
+
+### 🧱 登録コマンド例
+
+#### LocalSystem（既定）
+
+```cmd
+sc create MyService binPath= "C:\Program Files\MyApp\MyApp.exe" start= auto
+```
+
+#### NetworkService
+
+```cmd
+sc create MyService binPath= "C:\Program Files\MyApp\MyApp.exe" obj= "NT AUTHORITY\NetworkService" start= auto
+```
+
+#### ユーザーアカウント
+
+```cmd
+sc create MyService binPath= "C:\Program Files\MyApp\MyApp.exe" obj= ".\svcuser" password= "P@ssw0rd" start= auto
+```
+
+> ※ `obj=` はアカウント、`password=` は該当アカウントのログオンパスワードです。
+> LocalSystem / LocalService / NetworkService はパスワード不要です。
+
+---
+
+### 🔒 事前に必要な権限
+
+| 対象アカウント                       | 必要な権限                 | 補足                                                             |
+| ----------------------------- | --------------------- | -------------------------------------------------------------- |
+| LocalSystem                   | なし                    | 既定で有効                                                          |
+| LocalService / NetworkService | なし                    | 組み込み権限あり                                                       |
+| `.\\User` / `DOMAIN\\User`    | `SeServiceLogonRight` | 「サービスとしてログオンを許可する」権限。<br>ツールの `[8] SeServiceLogon 付与` で自動設定可能。 |
+
+---
+
+### ⚠️ ドメイン環境での注意
+
+* GPO（グループポリシー）が適用される環境では、
+  ローカルで付与した `SeServiceLogonRight` が
+  **ドメインポリシーによって上書き／削除される場合** があります。
+* 永続的に運用する場合は、ドメイン管理者に依頼し、
+  **GPO側の「サービスとしてログオンを許可する」ポリシーに該当ユーザーを追加**してください。
+
+---
+
+### 🧩 選択の目安
+
+| 目的                    | 推奨アカウント                           | 理由               |
+| --------------------- | --------------------------------- | ---------------- |
+| ローカル常駐ツール             | `LocalSystem`                     | 管理者権限が必要な操作に強い   |
+| 軽量バックグラウンドサービス        | `LocalService`                    | 最小権限・安全          |
+| ネットワーク連携（API / Web通信） | `NetworkService`                  | マシン資格情報で外部通信可能   |
+| ファイル共有・DBアクセス（ドメイン）   | `DOMAIN\User`                     | ドメイン資格情報で安全にアクセス |
+| 特定ユーザーのスクリプト実行        | `.\\User` + `SeServiceLogonRight` | GUI権限に近く、制御しやすい  |
+
+---
+
+### 🧭 備考
+
+* LocalSystem では UI 表示（notepad, MessageBox など）は不可。
+  → 対話的動作が必要な場合は **UserBridge** などでセッションブリッジを行う。
+* ユーザーアカウント指定時、パスワードが期限切れだと起動失敗。
+* `NetworkService` はネットワーク共有にアクセスする際、
+  「`<HOSTNAME>$`」として認証されます。
+
+---
+
 ## 🧰 ビルド情報
 
 * .NET Framework 4.8（または互換の .NET 6 以降でも動作可）

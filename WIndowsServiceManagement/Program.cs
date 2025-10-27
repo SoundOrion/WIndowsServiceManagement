@@ -28,7 +28,8 @@ namespace WindowsServiceManagement
             while (true)
             {
                 Console.WriteLine("[1] 登録(create)  [2] 起動(start)  [3] 停止(stop)  [4] 削除(delete)");
-                Console.WriteLine("[5] 状態(query)   [6] 説明設定(description)  [7] 自動/手動 切替  [8] SeServiceLogon 付与");
+                Console.WriteLine("[5] 状態(query)   [6] 説明設定(description)  [7] 自動/手動 切替");
+                Console.WriteLine("[8] SeServiceLogon 付与  [9] services.msc を開く");
                 Console.WriteLine("[0] 終了");
                 Console.Write("選択: ");
                 var key = Console.ReadLine()?.Trim();
@@ -45,6 +46,7 @@ namespace WindowsServiceManagement
                         case "6": SetDescription(cfg); break;
                         case "7": SetStartupType(cfg); break;
                         case "8": GrantLogonAsService(cfg); break;
+                        case "9": OpenServicesConsole(); break;
                         case "0":
                             Console.WriteLine("終了します。何かキーで閉じます…");
                             Console.ReadKey(true);
@@ -178,6 +180,31 @@ namespace WindowsServiceManagement
                 Console.WriteLine("付与に失敗: " + ex.Message);
                 Console.ResetColor();
                 Console.WriteLine("※ 管理者権限で実行しているか、ドメイングループポリシーで禁止されていないか確認してください。");
+            }
+        }
+
+        static void OpenServicesConsole()
+        {
+            if (!Confirm("Windows サービス管理コンソール（services.msc）を開きますか？"))
+                return;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "mmc.exe",
+                Arguments = "services.msc",
+                UseShellExecute = true,  // ここはtrue（GUIを開くため）
+            };
+
+            try
+            {
+                Process.Start(psi);
+                Console.WriteLine("services.msc を開きました。");
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[ERROR] services.msc を開けませんでした: {ex.Message}");
+                Console.ResetColor();
             }
         }
 

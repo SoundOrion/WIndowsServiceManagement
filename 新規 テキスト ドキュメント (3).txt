@@ -1,0 +1,158 @@
+了解。**同じマシン上のサービス（LocalSystem）から「いまユーザー側でログオンしている人」を取得する**ための、実運用向けサンプルを置いておきます。
+RDP/複数セッション環境も想定して、まず「WTS で Active なセッションのユーザー」を探し、見つからないときに「コンソール（物理画面）のセッションユーザー」でフォールバックします。サービス（Session 0）でも動きます。
+
+> そのままコピペでビルド可（.NET Framework 4.7.2+ / .NET 6+ いずれもOK）
+
+```csharp
+using System;
+using System.Runtime.InteropServices;
+
+public static class InteractiveUserResolver
+{
+    // ----- WTS / Terminal Services -----
+    private const int WTS_CURRENT_SERVER_HANDLE = 0;
+
+    private enum WTS_INFO_CLASS
+    {
+        WTSUserName = 5,
+        WTSDomainName = 7,
+        WTSConnectState = 8,
+    }
+
+    private enum WTS_CONNECTSTATE_CLASS
+    {
+        WTSActive,            // ユーザーがアクティブ（RDP/ローカル問わず最前面のセッション）
+        WTSConnected,
+        WTSConnectQuery,
+        WTSShadow,
+        WTSDisconnected,
+        WTSIdle,
+        WTSListen,
+        WTSReset,
+        WTSDown,
+        WTSInit
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WTS_SESSION_INFO
+    {
+        public int SessionID;
+        public IntPtr pWinStationName;
+        public WTS_CONNECTSTATE_CLASS State;
+    }
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSEnumerateSessions(
+        IntPtr hServer, int reserved, int version,
+        out IntPtr ppSessionInfo, out int pCount);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr pMemory);
+
+    [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool WTSQuerySessionInformation(
+        IntPtr hServer, int sessionId, WTS_INFO_CLASS wtsInfoClass,
+        out IntPtr ppBuffer, out int pBytesReturned);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint WTSGetActiveConsoleSessionId();
+
+    /// <summary>
+    /// RDP/複数セッション対応で、現在アクティブなセッションのユーザーを取得（DOMAIN\user）。
+    /// 見つからなければコンソールセッションのユーザーでフォールバック。
+    /// 取得できなければ null。
+    /// </summary>
+    public static string GetCurrentInteractiveUser()
+    {
+        // 1) まずは「WTSActive なセッション」を列挙して探す（RDP最前面にも対応）
+        string user = GetUserFromFirstActiveSession();
+        if (!string.IsNullOrEmpty(user))
+            return user;
+
+        // 2) 見つからなければ、物理コンソールのセッションIDから取得（シングルユーザーPCやロック時などのフォールバック）
+        return GetUserFromConsoleSession();
+    }
+
+    private static string GetUserFromFirstActiveSession()
+    {
+        if (!WTSEnumerateSessions(IntPtr.Zero, 0, 1, out var p, out var count) || p == IntPtr.Zero || count <= 0)
+            return null;
+
+        try
+        {
+            int dataSize = Marshal.SizeOf(typeof(WTS_SESSION_INFO));
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr itemPtr = IntPtr.Add(p, i * dataSize);
+                var si = Marshal.PtrToStructure<WTS_SESSION_INFO>(itemPtr);
+                if (si.State != WTS_CONNECTSTATE_CLASS.WTSActive)
+                    continue;
+
+                string u = QueryUser(si.SessionID, out string d);
+                if (!string.IsNullOrEmpty(u))
+                    return string.IsNullOrEmpty(d) ? u : $"{d}\\{u}";
+            }
+        }
+        finally
+        {
+            WTSFreeMemory(p);
+        }
+        return null;
+    }
+
+    private static string GetUserFromConsoleSession()
+    {
+        uint sessionId = WTSGetActiveConsoleSessionId();
+        if (sessionId == 0xFFFFFFFF) // INVALID_SESSION_ID
+            return null;
+
+        string u = QueryUser((int)sessionId, out string d);
+        if (!string.IsNullOrEmpty(u))
+            return string.IsNullOrEmpty(d) ? u : $"{d}\\{u}";
+        return null;
+    }
+
+    private static string QueryUser(int sessionId, out string domain)
+    {
+        domain = null;
+
+        // UserName
+        if (!WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSUserName,
+                out var pUser, out var bytesUser) || pUser == IntPtr.Zero || bytesUser <= 2)
+        {
+            if (pUser != IntPtr.Zero) WTSFreeMemory(pUser);
+            return null;
+        }
+        string user = Marshal.PtrToStringUni(pUser);
+        WTSFreeMemory(pUser);
+
+        // Domain
+        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSDomainName,
+                out var pDomain, out var bytesDom) && pDomain != IntPtr.Zero && bytesDom > 2)
+        {
+            domain = Marshal.PtrToStringUni(pDomain);
+            WTSFreeMemory(pDomain);
+        }
+        else if (pDomain != IntPtr.Zero)
+        {
+            WTSFreeMemory(pDomain);
+        }
+
+        return string.IsNullOrWhiteSpace(user) ? null : user;
+    }
+}
+
+// ===== 使い方（サービス内などから呼ぶ） =====
+// string who = InteractiveUserResolver.GetCurrentInteractiveUser();
+// // 例: "MYDOMAIN\\taro" / "MYPC\\taro" / null（誰もログオンしていない等）
+```
+
+## ポイントと実務メモ
+
+* **サービス（LocalSystem, Session 0）でも可**：WTS API はセッション分離の影響を受けません。
+* **RDP/複数ユーザー対応**：`WTSEnumerateSessions` → `WTSActive` を優先して取得。RDPが前面ならそちらのユーザーが返ります。
+* **誰もいない／ロック中**：ユーザー名が取れない（`null`）ことがあります。その場合の扱い（再試行、一定時間後の再チェックなど）は要件に合わせて。
+* **権限**：ローカル照会は LocalSystem 権限で十分。特別な権限付与は不要です。
+* **例外安全**：WTS の戻りバッファは必ず `WTSFreeMemory` で解放しています。
+
+必要なら、このヘルパーに「ユーザーの SID 取得」や「該当セッションでプロセスを起動（CreateProcessAsUser）」なども足せます。欲しい拡張があれば言ってください。

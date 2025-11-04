@@ -16,8 +16,12 @@ namespace WindowsServiceManagement
         {
             Console.OutputEncoding = Encoding.UTF8;
 
-            // Assembly からバージョンを取得
-            var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0.0";
+            //// Assembly からバージョンを取得
+            //var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0.0";
+
+            // ファイルバージョン
+            var fvi = FileVersionInfo.GetVersionInfo(Assembly.GetExecutingAssembly().Location);
+            var version = fvi.ProductVersion ?? fvi.FileVersion;
 
             var cfg = ServiceConfig.Load();
             Console.WriteLine($"=== Windows サービス操作ツール v{version}（cmd.exe /c 使用）===");

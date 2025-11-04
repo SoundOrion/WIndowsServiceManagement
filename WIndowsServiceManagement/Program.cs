@@ -1,11 +1,12 @@
 ﻿using System;
 using System.Configuration;
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Security.Principal;
 using System.Text;
-using System.Security.Principal;
-using System.Runtime.InteropServices;
 
 namespace WindowsServiceManagement
 {
@@ -15,8 +16,11 @@ namespace WindowsServiceManagement
         {
             Console.OutputEncoding = Encoding.UTF8;
 
+            // Assembly からバージョンを取得
+            var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0.0";
+
             var cfg = ServiceConfig.Load();
-            Console.WriteLine("=== Windows サービス操作ツール（cmd.exe /c 使用）===");
+            Console.WriteLine($"=== Windows サービス操作ツール v{version}（cmd.exe /c 使用）===");
             Console.WriteLine($"ServiceName : {cfg.ServiceName}");
             Console.WriteLine($"DisplayName : {cfg.DisplayName}");
             Console.WriteLine($"BinPath     : {cfg.BinPath}");
